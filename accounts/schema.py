@@ -24,14 +24,17 @@ class Query(graphene.ObjectType):
 
     def resolve_get_user(self, info, username):
         try:
-            response = cognito_client.admin_get_user(
-                UserPoolId=settings.COGNITO_USER_POOL_ID,
-                Username=username
-            )
+            authorization = getattr(info.context, 'META', {}).get('HTTP_AUTHORIZATION', '')
+            scheme, _, token = authorization.partition(' ')
+            if scheme.lower() != 'bearer' or not token.strip():
+                raise ValueError('A bearer access token is required')
+            response = cognito_client.get_user(AccessToken=token.strip())
+            if response.get('Username') != username:
+                raise ValueError('Requested user does not match the authenticated account')
             user_attributes = {attr['Name']: attr['Value'] for attr in response['UserAttributes']}
             return UserType(id=user_attributes.get('sub'), name=user_attributes.get('name'),username=username, email=user_attributes.get('email'))
         except ClientError as error:
-            raise Exception(str(error))
+            raise ValueError('The identity provider rejected the request') from None
 
 # Mutations
 class SignupMutation(graphene.Mutation):
@@ -56,8 +59,8 @@ class SignupMutation(graphene.Mutation):
             )
             return SignupMutation(user=UserType(username=username, email=email))
         except ClientError as error:
-            raise Exception(str(error))
-        
+            raise ValueError('The identity provider rejected the request') from None
+
 class UserConfirmationMutation(graphene.Mutation):
     class Arguments:
         username = graphene.String(required=True)
@@ -72,10 +75,10 @@ class UserConfirmationMutation(graphene.Mutation):
                 Username=username,
                 ConfirmationCode=otp
             )
-            
+
             return UserConfirmationMutation(success=True)
         except ClientError as error:
-            raise Exception(str(error))
+            raise ValueError('The identity provider rejected the request') from None
 
 class SigninMutation(graphene.Mutation):
     class Arguments:
@@ -95,17 +98,16 @@ class SigninMutation(graphene.Mutation):
                 AuthFlow='USER_PASSWORD_AUTH',
                 AuthParameters={'USERNAME': username, 'PASSWORD': password}
             )
+            if 'AuthenticationResult' not in res:
+                raise ValueError('An additional authentication challenge is required')
             token = res['AuthenticationResult']['AccessToken']
-            rtoken = res['AuthenticationResult']['RefreshToken']
-            response = cognito_client.admin_get_user(
-                UserPoolId=settings.COGNITO_USER_POOL_ID,
-                Username=username
-            )
+            rtoken = res['AuthenticationResult'].get('RefreshToken')
+            response = cognito_client.get_user(AccessToken=token)
             user_attributes = {attr['Name']: attr['Value'] for attr in response['UserAttributes']}
-            
+
             return SigninMutation(accessToken=token, refreshToken=rtoken, userId=user_attributes.get('sub'), userName=response['Username'], userEmail=user_attributes.get('email'))
         except ClientError as error:
-            raise Exception(str(error))
+            raise ValueError('The identity provider rejected the request') from None
 
 class Mutation(graphene.ObjectType):
     signup = SignupMutation.Field()

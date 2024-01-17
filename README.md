@@ -1,66 +1,54 @@
-# Fitness Auth App
+# Cognito identity API
 
-This Django application provides authentication functionality through AWS Cognito, using a GraphQL endpoint. It is designed to streamline the process of user authentication and management in a fitness application context.
+A Django/Graphene demonstration of signup, confirmation-code verification, password sign-in, and authenticated profile lookup through Amazon Cognito. Despite the repository name, this snapshot contains identity flows rather than fitness tracking features.
 
-## Key Features
+## Identity boundary
 
-- **Mutations**:
-  - **SignIn**: Allows users to sign in to AWS Cognito. Returns user records along with an authorization token for accessing other endpoints.
-  - **SignUp**: Facilitates the creation of new user accounts.
-  - **UserConfirmation**: Enables new users to confirm their account using an OTP sent to their email.
+```mermaid
+flowchart LR
+  A[GraphQL client] --> B[Django and Graphene]
+  B --> C[Cognito signup and confirmation]
+  B --> D[Cognito password authentication]
+  A -->|Bearer access token| E[Token-scoped profile lookup]
+  E --> F[Cognito GetUser]
+```
 
-- **Query**:
-  - **GetUser**: Fetches the record of a specific user, providing essential user details.
+`getUser(username: ...)` requires `Authorization: Bearer <access-token>`. The resolver obtains the caller's profile using Cognito `GetUser` and rejects a different requested username. It never uses a privileged `AdminGetUser` lookup. Sign-in also uses its returned access token to obtain profile attributes. Provider exceptions are replaced with a generic error message.
 
-## Built With
+## Configure a local instance
 
-- **Framework**: Python 3
-  - Leverages the robust and versatile capabilities of Python 3 to ensure smooth and efficient backend operations.
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp fitness_tracker/.env.sample fitness_tracker/.env
+python manage.py migrate
+python manage.py runserver
+```
 
-## Getting Started
+Read `fitness_tracker/settings.py` for the environment-file location and required `COGNITO_*`/AWS settings. Replace sample values locally; do not commit credentials. Prefer short-lived AWS credentials and a least-privilege development pool. Set `DJANGO_SECRET_KEY` to keep sessions stable between processes. The temporary fallback is for local development.
 
-To get a local copy up and running, follow these simple steps.
+The GraphQL endpoint is `/graphql/`. An authenticated query is:
 
-### Prerequisites
+```graphql
+query {
+  getUser(username: "your-cognito-username") {
+    id
+    username
+    name
+    email
+  }
+}
+```
 
-- **Python**: The application is built with Python. Ensure you have Python 3 installed on your system.
-- **pip**: You'll need pip for installing Python packages. It usually comes with Python.
+Signup, `confirmUser`, and `signin` are mutations defined in [accounts/schema.py](accounts/schema.py). Cognito must allow the configured `USER_PASSWORD_AUTH` flow. Additional authentication challenges currently produce an explicit error; the client does not implement an MFA/challenge continuation flow.
 
-### Installation
+## Test without AWS
 
-1. **Clone the Repository**:
-   Start by cloning the repository to your local machine:
-   
-   ```bash
-   git clone https://github.com/Chsaleem31/altercall-fitness.git
-   cd repo
-   ```
+```bash
+python -m unittest accounts.test_identity_boundary -v
+```
 
-2. **Set Up Environment Variables**:
-   Create a `.env` file to store your configuration:
-   
-   ```bash
-   cp .env.example .env
-   ```
-   Edit `.env` and fill in your AWS credentials.
+Five mocked tests cover missing tokens, token-scoped identity, rejected cross-user lookup, sign-in profile retrieval, and redacted provider failures. They do not provision a pool, send email, validate IAM permissions, or prove a production deployment.
 
-3. **Set Up and activate Python Virtual Environment**:
-   ```bash
-   python3 -m venv altercall_venv
-   source altercall_venv/bin/activate
-   ```
-
-4. **Install Dependencies**:
-   Install the required Python libraries for the project:
-   
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-5. **Run the Server**:
-   Launch the application locally:
-   
-   ```bash
-   python manage.py runserver
-   ```
-   The server will start, typically on `http://localhost:8000`. You can access the GraphQL endpoint at `http://localhost:8000/graphql`.
+Before a shared deployment, restrict allowed hosts/origins, disable Django debug mode and public GraphiQL, add request throttling, and complete the challenge/refresh/sign-out lifecycle. The checked-in SQLite schema had no user or session rows and was removed; migrations recreate local state.
